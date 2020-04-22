@@ -1,112 +1,90 @@
-import requests,re,os
+import os
+from multiprocessing.pool import Pool
+import requests
+from urllib.parse import urlencode
 from hashlib import md5
-from selenium import webdriver
+import re
 
-def get_cookies(url):
-    str=''
-    options = webdriver.ChromeOptions()
-    options.add_argument('--headless')
-    browser = webdriver.Chrome(options=options)
-    browser.get(url)
-    for i in browser.get_cookies():
-        try:
-            name=i.get('name')
-            value=i.get('value')
-            str=str+name+'='+value+';'
-        except ValueError as e:
-            print(e)
-    return str
+GROUP_START = 1
+GROUP_END = 20
+
+URL = "https://www.toutiao.com/search_content/?"
 
 def get_page(offset):
-    params = {
-        'aid': '24',
-        'app_name': 'web_search',
-        'offset': offset,
-        'format': 'json',
-        'keyword': '街拍',
-        'autoload': 'true',
-        'count': '20',
-        'en_qc': '1',
-        'cur_tab': '1',
-        'from': 'search_tab',
-        'pd': 'synthesis',
+    headers = {
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/78.0.3904.97 Safari/537.36",
+        "cookie": "csrftoken=2863caf55551dc02df0e73fe0825c8c5; tt_webid=6818413566569367053; s_v_web_id=verify_k9axrexf_8FT1z4KG_JO0n_4BlJ_AUXn_9Mwmjn1JObyM; ttcid=01def0dbb1d2427f8fab235ff4c5b34785; SLARDAR_WEB_ID=b6008e63-0fd5-437d-a4d7-9121829e3f0a; WEATHER_CITY=%E5%8C%97%E4%BA%AC; tt_webid=6818413566569367053; __tasessionId=r71cddt0d1587542430798; tt_scid=89cvvXIl7SiyAgniwo0DKwuUE8cknzf0SMcYnooqArvdM6LenCHE7xpEptWxWPSR715a",
+        "x-requested-with": "XMLHttpRequest",
+        'referer': 'https://www.toutiao.com/search/?keyword=%E8%A1%97%E6%8B%8D',
     }
-    url='https://www.toutiao.com/api/search/content/'
+    params = {
+        "aid":'24',
+        "app_name":'web_search',
+        "offset": offset,
+        "format": "json",
+        "keyword": "街拍",
+        "autoload": "true",
+        "count": 20,
+        "cur_tab": 1,
+        "from": "search_tab",
+        "pd":'synthesis',
+    }
+   
+    url = URL + urlencode(params)
     try:
-        r=requests.get(url,params=params,headers=headers)
-        if r.status_code==200:
-            return r.json()
-        else:
-            print('requests get_page error!')
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            return response.json()
     except requests.ConnectionError:
         return None
 
 def get_images(json):
-    data=json.get('data')
-    if data:
-        for i in data:
-            if i.get('title'):
-                title=re.sub('[\t]','',i.get('title'))
-                url=i.get('article_url')
-                if url:
-                    r=requests.get(url,headers=headers)
-                    if r.status_code==200:
-                        images_pattern = re.compile('JSON.parse\("(.*?)"\),\n', re.S)
-                        result = re.search(images_pattern, r.text)
-                        if result:
-                            b_url='http://p3.pstatp.com/origin/pgc-image/'
-                            up=re.compile('url(.*?)"width',re.S)
-                            results=re.findall(up,result.group(1))
-                            if results:
-                                for result in results:
-                                    yield {
-                                        'title':title,
-                                        'image':b_url+re.search('F([^F]*)\\\\",',result).group(1)
-                                    }
-                        else:
-                            images = i.get('image_list')
-                            for image in images:
-                                origin_image = re.sub("list.*?pgc-image", "large/pgc-image",
-                                                      image.get('url'))  # 改成origin/pgc-image是原图
-                                yield {
-                                    'image': origin_image,
-                                    'title': title
-                                }
+    if json.get('data'): 
+        for item in json.get('data'):
+            if item.get('title') is None:
+                continue
+            title = re.sub('[\t]', '', item.get('title'))
+            images = item.get('image_list')
+            if images:
+                for image in images:
+                    origin_image = re.sub("list.*?pgc-image", "large/pgc-image", image.get('url'))
+                    yield {
+                        'image':origin_image,
+                        'title':title
+                    }
 
 def save_image(item):
     img_path = 'img' + os.path.sep + item.get('title')
     if not os.path.exists(img_path):
-        os.makedirs(img_path) # 生成目录文件夹
+        os.makedirs(img_path)
     try:
-        resp = requests.get(item.get('image'))
-        if requests.codes.ok == resp.status_code:
+        resp = requests.get('https:'+item.get('image').replace('list', 'large'))
+        if resp.status_code == 200:
             file_path = img_path + os.path.sep + '{file_name}.{file_suffix}'.format(
                 file_name=md5(resp.content).hexdigest(),
-                file_suffix='jpg')  # 单一文件的路径
+                file_suffix='jpg' 
+            )
             if not os.path.exists(file_path):
                 with open(file_path, 'wb') as f:
                     f.write(resp.content)
                 print('Downloaded image path is %s' % file_path)
             else:
                 print('Already Downloaded', file_path)
-    except Exception as e:
-        print(e,'none123')
+    except requests.ConnectionError:
+        print('Failed to Save Image, item %s' % item)
+
 
 def main(offset):
-    a = get_page(offset)
-    for i in get_images(a):
-        save_image(i)
+    json = get_page(offset)
+    for item in get_images(json):
+        print(item)
+        save_image(item)
 
-cookies = get_cookies('https://www.toutiao.com')
-headers = {
-    'cookie': cookies,
-    'user-agent': 'Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.122 Safari/537.36',
-    'x-requested-with': 'XMLHttpRequest',
-    'referer': 'https://www.toutiao.com/search/?keyword=%E8%A1%97%E6%8B%8D',
-}
 
 if __name__=='__main__':
-    #p.map(main,[0]) #之所以不用Pool多进程是因为目前还没有办法实现跨进程共享Cookies
-    #map(main,[x*20 for x in range(3)]) map没有输出，不知道为什么
-    for i in [x*20 for x in range(3)]:
-        main(i)
+    pool = Pool()
+    groups = [x*20 for x in range(GROUP_START,GROUP_END+1)]
+    pool.map(main, groups)
+    pool.close()
+    pool.join()
+
